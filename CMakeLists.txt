@@ -5,6 +5,7 @@ PROJECT(picotls)
 
 FIND_PACKAGE(PkgConfig REQUIRED)
 INCLUDE(cmake/dtrace-utils.cmake)
+INCLUDE(GNUInstallDirs)
 
 CHECK_DTRACE(${PROJECT_SOURCE_DIR}/picotls-probes.d)
 IF ((CMAKE_SIZEOF_VOID_P EQUAL 8) AND
@@ -76,6 +77,11 @@ IF (BROTLI_DEC_FOUND AND BROTLI_ENC_FOUND)
 ENDIF ()
 
 ADD_LIBRARY(picotls-core ${CORE_FILES})
+ADD_LIBRARY(picotls::picotls-core ALIAS picotls-core)
+TARGET_INCLUDE_DIRECTORIES(picotls-core PUBLIC
+    "$<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/include>"
+    "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>"
+)
 TARGET_LINK_LIBRARIES(picotls-core ${CORE_EXTRA_LIBS})
 
 ADD_LIBRARY(picotls-minicrypto
@@ -90,6 +96,8 @@ ADD_LIBRARY(picotls-minicrypto
     lib/uecc.c
     lib/asn1.c
     lib/ffx.c)
+ADD_LIBRARY(picotls::picotls-minicrypto ALIAS picotls-minicrypto)
+
 TARGET_LINK_LIBRARIES(picotls-minicrypto picotls-core)
 ADD_EXECUTABLE(test-minicrypto.t
     ${MINICRYPTO_LIBRARY_FILES}
@@ -110,11 +118,15 @@ SET(TEST_EXES test-minicrypto.t)
 SET(PTLSBENCH_LIBS
     picotls-minicrypto picotls-core)
 
+SET(PTLS_INSTALL_LIBS picotls-core picotls-minicrypto)
+SET(PTLS_INSTALL_BINS "")
+
 FIND_PACKAGE(OpenSSL)
 IF (OPENSSL_FOUND AND NOT (OPENSSL_VERSION VERSION_LESS "1.0.1"))
     MESSAGE(STATUS "  Enabling OpenSSL support")
     INCLUDE_DIRECTORIES(${OPENSSL_INCLUDE_DIR})
     ADD_LIBRARY(picotls-openssl lib/openssl.c)
+    ADD_LIBRARY(picotls::picotls-openssl ALIAS picotls-openssl)
     TARGET_LINK_LIBRARIES(picotls-openssl ${OPENSSL_CRYPTO_LIBRARIES} picotls-core ${CMAKE_DL_LIBS})
     ADD_EXECUTABLE(cli t/cli.c lib/pembase64.c)
     TARGET_LINK_LIBRARIES(cli picotls-openssl picotls-core)
@@ -141,6 +153,9 @@ IF (OPENSSL_FOUND AND NOT (OPENSSL_VERSION VERSION_LESS "1.0.1"))
 
     LIST(APPEND PTLSBENCH_LIBS picotls-openssl ${OPENSSL_CRYPTO_LIBRARIES} ${CMAKE_DL_LIBS})
 
+    LIST(APPEND PTLS_INSTALL_LIBS picotls-openssl)
+    LIST(APPEND PTLS_INSTALL_BINS cli picotls-esni)
+
     SET(TEST_EXES ${TEST_EXES} test-openssl.t)
 ELSE ()
     MESSAGE(WARNING "Disabling OpenSSL support (requires 1.0.1 or newer)")
@@ -148,6 +163,7 @@ ENDIF ()
 
 IF (WITH_FUSION)
     ADD_LIBRARY(picotls-fusion lib/fusion.c)
+    ADD_LIBRARY(picotls::picotls-fusion ALIAS picotls-fusion)
     SET_TARGET_PROPERTIES(picotls-fusion PROPERTIES COMPILE_FLAGS "-mavx2 -maes -mpclmul")
     TARGET_LINK_LIBRARIES(picotls-fusion picotls-core)
     ADD_EXECUTABLE(test-fusion.t
@@ -162,6 +178,7 @@ IF (WITH_FUSION)
     SET(TEST_EXES ${TEST_EXES} test-fusion.t)
 
     LIST(APPEND PTLSBENCH_LIBS picotls-fusion)
+    LIST(APPEND PTLS_INSTALL_LIBS picotls-fusion)
 ENDIF ()
 
 ADD_EXECUTABLE(ptlsbench t/ptlsbench.c)
@@ -170,6 +187,7 @@ TARGET_LINK_LIBRARIES(ptlsbench ${PTLSBENCH_LIBS})
 IF (NOT WITH_FUSION)
     SET_TARGET_PROPERTIES(ptlsbench PROPERTIES EXCLUDE_FROM_ALL 1)
 ENDIF ()
+LIST(APPEND PTLS_INSTALL_BINS ptlsbench)
 
 ADD_CUSTOM_TARGET(check env BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR} prove --exec '' -v ${CMAKE_CURRENT_BINARY_DIR}/*.t t/*.t WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} DEPENDS ${TEST_EXES} cli)
 
@@ -219,4 +237,29 @@ IF (BUILD_FUZZER)
     TARGET_LINK_LIBRARIES(fuzz-server-hello picotls-core picotls-openssl ${OPENSSL_CRYPTO_LIBRARIES} ${LIB_FUZZER})
     TARGET_LINK_LIBRARIES(fuzz-client-hello picotls-core picotls-openssl ${OPENSSL_CRYPTO_LIBRARIES} ${LIB_FUZZER})
 
+    LIST(APPEND PTLS_INSTALL_BINS fuzz-asn1 fuzz-server-hello fuzz-client-hello)
 ENDIF()
+
+INSTALL(DIRECTORY include/ DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
+
+IF (NOT (CMAKE_VERSION VERSION_LESS "3.0.1"))
+    INSTALL(TARGETS ${PTLS_INSTALL_LIBS}
+            EXPORT picotls
+            LIBRARY DESTINATION lib
+            ARCHIVE DESTINATION lib)
+
+    INSTALL(TARGETS ${PTLS_INSTALL_BINS}
+            RUNTIME DESTINATION bin)
+ELSE()
+    MESSAGE(WARNING "CANNOT MAKE INSTALL (requires CMAKE 3.0.1 or newer)")
+ENDIF()
+
+SET(CONFIG_TARGET "picotlsConfigTargets.cmake")
+SET(EXPORT_DEST "${CMAKE_INSTALL_LIBDIR}/cmake/picotls")
+SET(PROJECT_CONFIG_TEMPLATE "${CMAKE_CURRENT_LIST_DIR}/cmake/picotlsConfig.cmake.in")
+SET(PROJECT_CONFIG "${CMAKE_CURRENT_BINARY_DIR}/picotlsConfig.cmake")
+
+INSTALL(EXPORT picotls DESTINATION ${EXPORT_DEST} NAMESPACE picotls:: FILE ${CONFIG_TARGET})
+INCLUDE(CMakePackageConfigHelpers)
+configure_package_config_file("${PROJECT_CONFIG_TEMPLATE}" "${PROJECT_CONFIG}" INSTALL_DESTINATION ${EXPORT_DEST})
+INSTALL(FILES "${PROJECT_CONFIG}" DESTINATION ${EXPORT_DEST})
